@@ -81,12 +81,17 @@ class Manager:
         # Initialize device UUID
         self.init_device_uuid()
 
-        # Initialize proxy layer
-        self._miot_proxy = await MiotProxy.create_miot_proxy(
-            uuid=self.device_uuid,
-            redirect_uri="https://mico.api.mijia.tech/login_redirect",
-            kv_dao=self._kv_dao,
-            cloud_server=MIOT_CONFIG["cloud_server"])
+        # Initialize proxy layer with error handling
+        try:
+            self._miot_proxy = await MiotProxy.create_miot_proxy(
+                uuid=self.device_uuid,
+                redirect_uri="https://mico.api.mijia.tech/login_redirect",
+                kv_dao=self._kv_dao,
+                cloud_server=MIOT_CONFIG["cloud_server"])
+            logger.info("MIOT proxy initialized successfully")
+        except Exception as e:
+            logger.warning(f"MIOT proxy initialization failed (network issue?), continuing without MIOT: {e}")
+            self._miot_proxy = None
 
         self._ha_proxy = HAProxy(kv_dao=self._kv_dao)
         
@@ -96,23 +101,41 @@ class Manager:
         # LLM proxy initialization moved to ModelService.__init__ for automatic execution
 
         # Initialize MCP client manager
-        self._mcp_client_manager = await MCPClientManager.create(self._mcp_config_dao, self._miot_proxy, self._ha_proxy, self._jetlinks_proxy)
+        try:
+            self._mcp_client_manager = await MCPClientManager.create(self._mcp_config_dao, self._miot_proxy, self._ha_proxy, self._jetlinks_proxy)
+            logger.info("MCP client manager initialized successfully")
+        except Exception as e:
+            logger.warning(f"MCP client manager initialization failed, continuing without full MCP support: {e}")
+            self._mcp_client_manager = None
 
         # Initialize tool executor
-        self._tool_executor = ToolExecutor(self._mcp_client_manager)
+        try:
+            self._tool_executor = ToolExecutor(self._mcp_client_manager) if self._mcp_client_manager else None
+        except Exception as e:
+            logger.warning(f"Tool executor initialization failed: {e}")
+            self._tool_executor = None
 
         # Initialize default preset action manager
-        self._default_preset_action_manager = DefaultPresetActionManager(self._tool_executor)
+        try:
+            self._default_preset_action_manager = DefaultPresetActionManager(self._tool_executor) if self._tool_executor else None
+        except Exception as e:
+            logger.warning(f"Default preset action manager initialization failed: {e}")
+            self._default_preset_action_manager = None
 
         # Initialize trigger
-        self._trigger_rule_runner = TriggerRuleRunner(
-            trigger_rules=self._trigger_rule_dao.get_all(enabled_only=False),
-            miot_proxy=self._miot_proxy,
-            get_llm_proxy_by_purpose=self.get_llm_proxy_by_purpose,
-            get_language=self.get_language,
-            tool_executor=self._tool_executor,
-            trigger_rule_log_dao=self._trigger_rule_log_dao,
-        )
+        try:
+            self._trigger_rule_runner = TriggerRuleRunner(
+                trigger_rules=self._trigger_rule_dao.get_all(enabled_only=False),
+                miot_proxy=self._miot_proxy,
+                get_llm_proxy_by_purpose=self.get_llm_proxy_by_purpose,
+                get_language=self.get_language,
+                tool_executor=self._tool_executor,
+                trigger_rule_log_dao=self._trigger_rule_log_dao,
+            )
+            logger.info("Trigger rule runner initialized successfully")
+        except Exception as e:
+            logger.warning(f"Trigger rule runner initialization failed: {e}")
+            self._trigger_rule_runner = None
 
         # Initialize all services
         self._auth_service = AuthService(self._kv_dao)
@@ -130,11 +153,16 @@ class Manager:
             self._mcp_client_manager
         )
 
-        self._trigger_rule_runner.start_periodic_task()
+        # Start periodic task only if runner initialized
+        if self._trigger_rule_runner:
+            try:
+                self._trigger_rule_runner.start_periodic_task()
+            except Exception as e:
+                logger.warning(f"Failed to start trigger rule periodic task: {e}")
 
         if callback:
             callback()
-        logger.info("Manager initialization completed")
+        logger.info("Manager initialization completed (some services may be limited due to network issues)")
 
     def init_device_uuid(self):
         """Initialize device UUID"""

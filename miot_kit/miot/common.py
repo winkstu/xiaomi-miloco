@@ -84,6 +84,7 @@ async def http_get_json_async(
     params: Optional[Dict] = None,
     headers: Optional[Dict] = None,
     loop: Optional[AbstractEventLoop] = None,
+    timeout: int = 30,
 ) -> Dict:
     """Http get json."""
     full_url = url
@@ -93,7 +94,7 @@ async def http_get_json_async(
 
     async with ClientSession(loop=loop) as session:
         async with session.get(
-            url=full_url, headers=headers or {}, timeout=ClientTimeout(total=30)
+            url=full_url, headers=headers or {}, timeout=ClientTimeout(total=timeout)
         ) as response:
             if response.status != 200:
                 raise ValueError(f"http get json failed, {response.status}")

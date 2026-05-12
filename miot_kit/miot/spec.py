@@ -116,12 +116,33 @@ class _MIoTSpecStdLibClass:
             self.__load(std_lib_cache["data"])
             return
         # Update spec std lib
-        if not await self.refresh_async():
-            if isinstance(std_lib_cache, Dict) and "data" in std_lib_cache:
-                self.__load(std_lib_cache["data"])
-                _LOGGER.info("get spec std lib failed, use local cache")
-            else:
-                _LOGGER.error("load spec std lib failed")
+        try:
+            if not await self.refresh_async():
+                if isinstance(std_lib_cache, Dict) and "data" in std_lib_cache:
+                    self.__load(std_lib_cache["data"])
+                    _LOGGER.info("get spec std lib failed, use local cache")
+                else:
+                    # Initialize with empty data
+                    self.__load({
+                        "devices": {},
+                        "services": {},
+                        "properties": {},
+                        "events": {},
+                        "actions": {},
+                        "values": {}
+                    })
+                    _LOGGER.warning("load spec std lib failed, using empty defaults")
+        except Exception as e:
+            # Fallback to empty data on any error
+            self.__load({
+                "devices": {},
+                "services": {},
+                "properties": {},
+                "events": {},
+                "actions": {},
+                "values": {}
+            })
+            _LOGGER.warning(f"load spec std lib failed with error, using empty defaults: {e}")
 
     async def deinit_async(self) -> None:
         """Deinit."""
@@ -221,130 +242,145 @@ class _MIoTSpecStdLibClass:
 
     async def __request_from_cloud_async(self) -> Optional[Dict]:
         std_libs: Optional[Dict] = None
-        for index in range(3):
-            try:
-                tasks: List = []
-                # Get std lib
-                for name in ["device", "service", "property", "event", "action"]:
-                    tasks.append(self.__get_template_list(name=name))
-                tasks.append(self.__get_property_value())
-                # Async request
-                results = await asyncio.gather(*tasks)
-                if None in results:
-                    raise MIoTSpecError("init failed, None in result")
-                std_libs = {
-                    "devices": results[0],
-                    "services": results[1],
-                    "properties": results[2],
-                    "events": results[3],
-                    "actions": results[4],
-                    "values": results[5],
-                }
-                # Get external std lib, Power by LM
-                tasks.clear()
-                for name in ["device", "service", "property", "event", "action", "property_value"]:
-                    tasks.append(
-                        http_get_json_async(
-                            url=f"https://cdn.cnbj1.fds.api.mi-img.com/res-conf/xiaomi-home/std_ex_{name}.json",
-                            loop=self._main_loop
-                        )
+        try:
+            tasks: List = []
+            # Get std lib
+            for name in ["device", "service", "property", "event", "action"]:
+                tasks.append(self.__get_template_list(name=name))
+            tasks.append(self.__get_property_value())
+            # Async request with shorter timeout
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Check if any result is exception or None
+            for i, result in enumerate(results):
+                if isinstance(result, Exception) or result is None:
+                    _LOGGER.warning(f"Failed to get template list {i}: {result}")
+                    return None
+            std_libs = {
+                "devices": results[0],
+                "services": results[1],
+                "properties": results[2],
+                "events": results[3],
+                "actions": results[4],
+                "values": results[5],
+            }
+            # Get external std lib, Power by LM
+            tasks.clear()
+            for name in ["device", "service", "property", "event", "action", "property_value"]:
+                tasks.append(
+                    http_get_json_async(
+                        url=f"https://cdn.cnbj1.fds.api.mi-img.com/res-conf/xiaomi-home/std_ex_{name}.json",
+                        loop=self._main_loop,
+                        timeout=5
                     )
-                results = await asyncio.gather(*tasks)
-                if results[0]:
-                    for key, value in results[0].items():
-                        if key in std_libs["devices"]:
-                            std_libs["devices"][key].update(value)
-                        else:
-                            std_libs["devices"][key] = value
-                else:
-                    _LOGGER.error("get external std lib failed, devices")
-                if results[1]:
-                    for key, value in results[1].items():
-                        if key in std_libs["services"]:
-                            std_libs["services"][key].update(value)
-                        else:
-                            std_libs["services"][key] = value
-                else:
-                    _LOGGER.error("get external std lib failed, services")
-                if results[2]:
-                    for key, value in results[2].items():
-                        if key in std_libs["properties"]:
-                            std_libs["properties"][key].update(value)
-                        else:
-                            std_libs["properties"][key] = value
-                else:
-                    _LOGGER.error("get external std lib failed, properties")
-                if results[3]:
-                    for key, value in results[3].items():
-                        if key in std_libs["events"]:
-                            std_libs["events"][key].update(value)
-                        else:
-                            std_libs["events"][key] = value
-                else:
-                    _LOGGER.error("get external std lib failed, events")
-                if results[4]:
-                    for key, value in results[4].items():
-                        if key in std_libs["actions"]:
-                            std_libs["actions"][key].update(value)
-                        else:
-                            std_libs["actions"][key] = value
-                else:
-                    _LOGGER.error("get external std lib failed, actions")
-                if results[5]:
-                    for key, value in results[5].items():
-                        if key in std_libs["values"]:
-                            std_libs["values"][key].update(value)
-                        else:
-                            std_libs["values"][key] = value
-                else:
-                    _LOGGER.error(
-                        "get external std lib failed, values")
-                return std_libs
-            except Exception as err:  # pylint: disable=broad-exception-caught
-                _LOGGER.error(
-                    "update spec std lib error, retry, %d, %s", index, err)
-        return None
+                )
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Process external lib results with error handling
+            if results[0] and not isinstance(results[0], Exception):
+                for key, value in results[0].items():
+                    if key in std_libs["devices"]:
+                        std_libs["devices"][key].update(value)
+                    else:
+                        std_libs["devices"][key] = value
+            else:
+                _LOGGER.warning("get external std lib failed, devices, skipping")
+            if results[1] and not isinstance(results[1], Exception):
+                for key, value in results[1].items():
+                    if key in std_libs["services"]:
+                        std_libs["services"][key].update(value)
+                    else:
+                        std_libs["services"][key] = value
+            else:
+                _LOGGER.warning("get external std lib failed, services, skipping")
+            if results[2] and not isinstance(results[2], Exception):
+                for key, value in results[2].items():
+                    if key in std_libs["properties"]:
+                        std_libs["properties"][key].update(value)
+                    else:
+                        std_libs["properties"][key] = value
+            else:
+                _LOGGER.warning("get external std lib failed, properties, skipping")
+            if results[3] and not isinstance(results[3], Exception):
+                for key, value in results[3].items():
+                    if key in std_libs["events"]:
+                        std_libs["events"][key].update(value)
+                    else:
+                        std_libs["events"][key] = value
+            else:
+                _LOGGER.warning("get external std lib failed, events, skipping")
+            if results[4] and not isinstance(results[4], Exception):
+                for key, value in results[4].items():
+                    if key in std_libs["actions"]:
+                        std_libs["actions"][key].update(value)
+                    else:
+                        std_libs["actions"][key] = value
+            else:
+                _LOGGER.warning("get external std lib failed, actions, skipping")
+            if results[5] and not isinstance(results[5], Exception):
+                for key, value in results[5].items():
+                    if key in std_libs["values"]:
+                        std_libs["values"][key].update(value)
+                    else:
+                        std_libs["values"][key] = value
+            else:
+                _LOGGER.warning("get external std lib failed, values, skipping")
+            return std_libs
+        except Exception as err:
+            _LOGGER.warning(f"update spec std lib error: {err}")
+            return None
 
     async def __get_property_value(self) -> Dict:
-        reply = await http_get_json_async(
-            url="https://miot-spec.org/miot-spec-v2/normalization/list/property_value", loop=self._main_loop)
-        if reply is None or "result" not in reply:
-            raise MIoTSpecError("get property value failed")
-        result = {}
-        for item in reply["result"]:
-            if (
-                not isinstance(item, Dict)
-                or "normalization" not in item
-                or "description" not in item
-                or "proName" not in item
-                or "urn" not in item
-            ):
-                continue
-            result[f"{item['urn']}|{item['proName']}|{item['normalization']}"] = {
-                "zh-Hans": item["description"],
-                "en": item["normalization"]
-            }
-        return result
+        try:
+            reply = await http_get_json_async(
+                url="https://miot-spec.org/miot-spec-v2/normalization/list/property_value", 
+                loop=self._main_loop, 
+                timeout=5
+            )
+            if reply is None or "result" not in reply:
+                raise MIoTSpecError("get property value failed")
+            result = {}
+            for item in reply["result"]:
+                if (
+                    not isinstance(item, Dict)
+                    or "normalization" not in item
+                    or "description" not in item
+                    or "proName" not in item
+                    or "urn" not in item
+                ):
+                    continue
+                result[f"{item['urn']}|{item['proName']}|{item['normalization']}"] = {
+                    "zh-Hans": item["description"],
+                    "en": item["normalization"]
+                }
+            return result
+        except Exception as err:
+            _LOGGER.warning(f"__get_property_value failed: {err}")
+            raise  # Re-raise to let the caller handle it
 
     async def __get_template_list(self, name: str) -> Dict:
-        reply = await http_get_json_async(
-            url="https://miot-spec.org/miot-spec-v2/template/list/" + name,
-            loop=self._main_loop)
-        if reply is None or "result" not in reply:
-            raise MIoTSpecError(f"get service failed, {name}")
-        result: Dict = {}
-        for item in reply["result"]:
-            if not isinstance(item, Dict) or "type" not in item or "description" not in item:
-                continue
-            if "zh_cn" in item["description"]:
-                item["description"]["zh-Hans"] = item["description"].pop("zh_cn")
-            if "zh_hk" in item["description"]:
-                item["description"]["zh-Hant"] = item["description"].pop("zh_hk")
-                item["description"].pop("zh_tw", None)
-            elif "zh_tw" in item["description"]:
-                item["description"]["zh-Hant"] = item["description"].pop("zh_tw")
-            result[item["type"]] = item["description"]
-        return result
+        try:
+            reply = await http_get_json_async(
+                url="https://miot-spec.org/miot-spec-v2/template/list/" + name,
+                loop=self._main_loop,
+                timeout=5
+            )
+            if reply is None or "result" not in reply:
+                raise MIoTSpecError(f"get service failed, {name}")
+            result: Dict = {}
+            for item in reply["result"]:
+                if not isinstance(item, Dict) or "type" not in item or "description" not in item:
+                    continue
+                if "zh_cn" in item["description"]:
+                    item["description"]["zh-Hans"] = item["description"].pop("zh_cn")
+                if "zh_hk" in item["description"]:
+                    item["description"]["zh-Hant"] = item["description"].pop("zh_hk")
+                    item["description"].pop("zh_tw", None)
+                elif "zh_tw" in item["description"]:
+                    item["description"]["zh-Hant"] = item["description"].pop("zh_tw")
+                result[item["type"]] = item["description"]
+            return result
+        except Exception as err:
+            _LOGGER.warning(f"__get_template_list failed for {name}: {err}")
+            raise  # Re-raise to let the caller handle it
 
 
 class _MIoTSpecBase(BaseModel):
@@ -879,12 +915,27 @@ class MIoTSpecTypeClass:
             _LOGGER.info("load spec types from cache, %s", self._data.ts)
             return
 
-        if not await self.refresh_async():
-            if isinstance(cache, Dict) and "devices" in cache and "services" in cache:
-                self._data = MIoTSpecType.model_validate(obj=cache)
-                _LOGGER.info("load spec types from cache failed, use cache, %s", self._data.ts)
-            else:
-                _LOGGER.error("load spec types failed")
+        try:
+            if not await self.refresh_async():
+                if isinstance(cache, Dict) and "devices" in cache and "services" in cache:
+                    self._data = MIoTSpecType.model_validate(obj=cache)
+                    _LOGGER.info("load spec types from cache failed, use cache, %s", self._data.ts)
+                else:
+                    # Initialize with empty data if no cache and no network
+                    self._data = MIoTSpecType.model_validate(obj={
+                        "ts": int(time.time()),
+                        "devices": {},
+                        "services": {}
+                    })
+                    _LOGGER.warning("load spec types failed, using empty defaults (network issue?)")
+        except Exception as e:
+            # Fallback to empty data on any error
+            self._data = MIoTSpecType.model_validate(obj={
+                "ts": int(time.time()),
+                "devices": {},
+                "services": {}
+            })
+            _LOGGER.warning(f"load spec types failed with error, using empty defaults: {e}")
 
     async def deinit_async(self) -> None:
         """Deinit."""
@@ -952,66 +1003,74 @@ class MIoTSpecTypeClass:
 
     async def __get_device_types(self) -> Optional[Dict[str, MIoTSpecDeviceType]]:
         """Get device types."""
-        type_list: Dict[str, List[str]] = await http_get_json_async(
-            url="http://miot-spec.org/miot-spec-v2/spec/devices", loop=self._main_loop)
-        if "types" not in type_list or not isinstance(type_list["types"], List):
-            _LOGGER.error("get device types failed, invalid types")
-            return None
-        task_list = []
-        for type_item in type_list["types"]:
-            task_list.append(http_get_json_async(
-                url="https://miot-spec.org/miot-spec-v2/spec/device?type="+type_item,
-                loop=self._main_loop))
-        task_result = await asyncio.gather(*task_list, return_exceptions=True)
-        result: Dict[str, MIoTSpecDeviceType] = {}
-        for type_device, type_info in zip(type_list["types"], task_result):
-            if not isinstance(type_info, Dict):
-                _LOGGER.error("get device types failed, invalid type info, %s, %s", type_device, type_info)
-                continue
-            result[type_device.split(":")[3]] = MIoTSpecDeviceType.model_validate(obj={
-                "description": {"en": type_info.get("description", "")},
-                "required-services": [
-                    type_service.split(":")[3] for type_service in type_info.get("required-services", [])
-                    if type_service.split(":")[3] != "device-information"],
-                "optional-services": [
-                    type_service.split(":")[3] for type_service in type_info.get("optional-services", [])]
-            })
-        return result
+        try:
+            type_list: Dict[str, List[str]] = await http_get_json_async(
+                url="http://miot-spec.org/miot-spec-v2/spec/devices", loop=self._main_loop, timeout=5)
+            if "types" not in type_list or not isinstance(type_list["types"], List):
+                _LOGGER.error("get device types failed, invalid types")
+                return {}  # Return empty instead of None
+            task_list = []
+            for type_item in type_list["types"]:
+                task_list.append(http_get_json_async(
+                    url="https://miot-spec.org/miot-spec-v2/spec/device?type="+type_item,
+                    loop=self._main_loop, timeout=5))
+            task_result = await asyncio.gather(*task_list, return_exceptions=True)
+            result: Dict[str, MIoTSpecDeviceType] = {}
+            for type_device, type_info in zip(type_list["types"], task_result):
+                if not isinstance(type_info, Dict):
+                    _LOGGER.error("get device types failed, invalid type info, %s, %s", type_device, type_info)
+                    continue
+                result[type_device.split(":")[3]] = MIoTSpecDeviceType.model_validate(obj={
+                    "description": {"en": type_info.get("description", "")},
+                    "required-services": [
+                        type_service.split(":")[3] for type_service in type_info.get("required-services", [])
+                        if type_service.split(":")[3] != "device-information"],
+                    "optional-services": [
+                        type_service.split(":")[3] for type_service in type_info.get("optional-services", [])]
+                })
+            return result
+        except Exception as e:
+            _LOGGER.warning(f"Failed to get device types: {e}")
+            return {}
 
     async def __get_service_types(self) -> Optional[Dict[str, MIoTSpecServiceType]]:
         """Get service types."""
-        type_list: Dict[str, List[str]] = await http_get_json_async(
-            url="http://miot-spec.org/miot-spec-v2/spec/services", loop=self._main_loop)
-        if "types" not in type_list or not isinstance(type_list["types"], List):
-            _LOGGER.error("get service types failed, invalid types")
-            return None
-        task_list = []
-        for type_item in type_list["types"]:
-            task_list.append(http_get_json_async(
-                url="https://miot-spec.org/miot-spec-v2/spec/service?type="+type_item,
-                loop=self._main_loop))
-        task_result = await asyncio.gather(*task_list, return_exceptions=True)
-        result: Dict[str, MIoTSpecServiceType] = {}
-        for type_service, type_info in zip(type_list["types"], task_result):
-            if not isinstance(type_info, Dict):
-                _LOGGER.error("get service types failed, invalid type info, %s, %s", type_service, type_info)
-                continue
-            result[type_service.split(":")[3]] = MIoTSpecServiceType.model_validate(obj={
-                "description": {"en": type_info.get("description", "")},
-                "required-properties": [
-                    type_prop.split(":")[3] for type_prop in type_info.get("required-properties", [])],
-                "optional-properties": [
-                    type_prop.split(":")[3] for type_prop in type_info.get("optional-properties", [])],
-                "required-actions": [
-                    type_action.split(":")[3] for type_action in type_info.get("required-actions", [])],
-                "optional-actions": [
-                    type_action.split(":")[3] for type_action in type_info.get("optional-actions", [])],
-                "required-events": [
-                    type_event.split(":")[3] for type_event in type_info.get("required-events", [])],
-                "optional-events": [
-                    type_event.split(":")[3] for type_event in type_info.get("optional-events", [])],
-            })
-        return result
+        try:
+            type_list: Dict[str, List[str]] = await http_get_json_async(
+                url="http://miot-spec.org/miot-spec-v2/spec/services", loop=self._main_loop, timeout=5)
+            if "types" not in type_list or not isinstance(type_list["types"], List):
+                _LOGGER.error("get service types failed, invalid types")
+                return {}  # Return empty instead of None
+            task_list = []
+            for type_item in type_list["types"]:
+                task_list.append(http_get_json_async(
+                    url="https://miot-spec.org/miot-spec-v2/spec/service?type="+type_item,
+                    loop=self._main_loop, timeout=5))
+            task_result = await asyncio.gather(*task_list, return_exceptions=True)
+            result: Dict[str, MIoTSpecServiceType] = {}
+            for type_service, type_info in zip(type_list["types"], task_result):
+                if not isinstance(type_info, Dict):
+                    _LOGGER.error("get service types failed, invalid type info, %s, %s", type_service, type_info)
+                    continue
+                result[type_service.split(":")[3]] = MIoTSpecServiceType.model_validate(obj={
+                    "description": {"en": type_info.get("description", "")},
+                    "required-properties": [
+                        type_prop.split(":")[3] for type_prop in type_info.get("required-properties", [])],
+                    "optional-properties": [
+                        type_prop.split(":")[3] for type_prop in type_info.get("optional-properties", [])],
+                    "required-actions": [
+                        type_action.split(":")[3] for type_action in type_info.get("required-actions", [])],
+                    "optional-actions": [
+                        type_action.split(":")[3] for type_action in type_info.get("optional-actions", [])],
+                    "required-events": [
+                        type_event.split(":")[3] for type_event in type_info.get("required-events", [])],
+                    "optional-events": [
+                        type_event.split(":")[3] for type_event in type_info.get("optional-events", [])],
+                })
+            return result
+        except Exception as e:
+            _LOGGER.warning(f"Failed to get service types: {e}")
+            return {}
 
 
 class MIoTSpecParser:
