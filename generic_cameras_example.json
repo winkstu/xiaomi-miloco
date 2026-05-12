@@ -1,0 +1,27 @@
+{
+  "cameras": [
+    {
+      "did": "rtsp-cam-frontdoor",
+      "name": "前门摄像头",
+      "protocol": "rtsp",
+      "stream_url": "rtsp://192.168.1.100:554/stream1",
+      "username": "admin",
+      "password": "your_password_here",
+      "channel_count": 1
+    },
+    {
+      "did": "rtsp-cam-backyard",
+      "name": "后院摄像头",
+      "protocol": "rtsp",
+      "stream_url": "rt://192.168.1.101:554/stream1",
+      "channel_count": 1
+    },
+    {
+      "did": "rtsp-cam-garage",
+      "name": "车库摄像头",
+      "protocol": "rtsp",
+      "stream_url": "rtsp://192.168.1.102:554/stream1",
+      "channel_count": 1
+    }
+  ]
+}
