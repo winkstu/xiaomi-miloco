@@ -24,6 +24,7 @@ from miloco_server.dao.mcp_config_dao import MCPConfigDAO
 from miloco_server.proxy.llm_proxy import LLMProxy
 from miloco_server.proxy.miot_proxy import MiotProxy
 from miloco_server.proxy.ha_proxy import HAProxy
+from miloco_server.proxy.jetlinks_proxy import JetLinksProxy
 from miloco_server.service.trigger_rule_runner import TriggerRuleRunner
 from miloco_server.mcp.mcp_client_manager import MCPClientManager
 from miloco_server.service.auth_service import AuthService
@@ -88,11 +89,14 @@ class Manager:
             cloud_server=MIOT_CONFIG["cloud_server"])
 
         self._ha_proxy = HAProxy(kv_dao=self._kv_dao)
-
+        
+        # Initialize JetLinks proxy (optional - currently no default config)
+        self._jetlinks_proxy = None
+        
         # LLM proxy initialization moved to ModelService.__init__ for automatic execution
 
         # Initialize MCP client manager
-        self._mcp_client_manager = await MCPClientManager.create(self._mcp_config_dao, self._miot_proxy, self._ha_proxy)
+        self._mcp_client_manager = await MCPClientManager.create(self._mcp_config_dao, self._miot_proxy, self._ha_proxy, self._jetlinks_proxy)
 
         # Initialize tool executor
         self._tool_executor = ToolExecutor(self._mcp_client_manager)
@@ -229,6 +233,10 @@ class Manager:
     @property
     def ha_proxy(self) -> HAProxy:
         return self._ha_proxy
+        
+    @property
+    def jetlinks_proxy(self) -> JetLinksProxy:
+        return self._jetlinks_proxy
 
 # Global singleton instance
 manager_instance = None
