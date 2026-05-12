@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from miloco_server.proxy.ha_proxy import HAProxy
 from miloco_server.proxy.miot_proxy import MiotProxy
+from miloco_server.proxy.jetlinks_proxy import JetLinksProxy
 from miloco_server.mcp.mcp_client import LocalMCPConfig, MCPClientBase, MCPClientFactory, TransportType, MCPClientConfig
 from miloco_server.mcp.local_mcp_servers import LocalMCPServerFactory
 from miloco_server.dao.mcp_config_dao import MCPConfigDAO
@@ -22,6 +23,7 @@ from miot.mcp import (
     MIoTDeviceMcpInterface,
     HomeAssistantAutomationMcpInterface
 )
+from jetlinks import JetLinksMcp, JetLinksMcpInterface
 
 logger = logging.getLogger(__name__)
 
@@ -38,16 +40,17 @@ class ToolInfo:
 class MCPClientManager:
     """MCP Client Manager"""
 
-    def __init__(self, config_dao: MCPConfigDAO, miot_proxy: MiotProxy, ha_proxy: HAProxy):
+    def __init__(self, config_dao: MCPConfigDAO, miot_proxy: MiotProxy, ha_proxy: HAProxy, jetlinks_proxy: Optional[JetLinksProxy] = None):
         # Simplified constructor, only basic initialization, async initialization through factory method
         self.clients: Dict[str, MCPClientBase] = {}
         self.config_dao = config_dao
         self._initialized = False
         self.miot_proxy = miot_proxy
         self.ha_proxy = ha_proxy
+        self.jetlinks_proxy = jetlinks_proxy
 
     @classmethod
-    async def create(cls, config_dao: MCPConfigDAO, miot_proxy: MiotProxy, ha_proxy: HAProxy) -> "MCPClientManager":
+    async def create(cls, config_dao: MCPConfigDAO, miot_proxy: MiotProxy, ha_proxy: HAProxy, jetlinks_proxy: Optional[JetLinksProxy] = None) -> "MCPClientManager":
         """
         Async factory method to ensure initialization in correct async context
 
@@ -55,11 +58,12 @@ class MCPClientManager:
             config_dao: MCP configuration DAO
             miot_proxy: MIoT proxy
             ha_proxy: Home Assistant proxy
+            jetlinks_proxy: JetLinks proxy (optional)
         Returns:
             MCPClientManager: Fully initialized instance
         """
         # Create instance and perform async initialization
-        instance = cls(config_dao, miot_proxy, ha_proxy)
+        instance = cls(config_dao, miot_proxy, ha_proxy, jetlinks_proxy)
         await instance._init_all_clients()
         return instance
 
@@ -121,6 +125,7 @@ class MCPClientManager:
             await self._init_local_mcp_servers()
             await self.init_miot_mcp_clients()
             await self.init_ha_automations()
+            await self.init_jetlinks_mcp_clients()
             logger.info("init default mcp clients done")
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Failed to initialize default MCP clients: %s", e, exc_info=True)
@@ -197,6 +202,33 @@ class MCPClientManager:
                 logger.error("Failed to initialize Home Assistant MCP client: %s", e)
         else:
             logger.warning("Home Assistant client not initialized")
+
+    async def init_jetlinks_mcp_clients(self):
+        """Initialize JetLinks MCP Clients"""
+        if not self.jetlinks_proxy:
+            logger.warning("JetLinks proxy not initialized, skipping JetLinks MCP clients initialization")
+            return
+            
+        jetlinks_client = self.jetlinks_proxy.jetlinks_client
+        try:
+            jetlinks_mcp = JetLinksMcp(
+                interface=JetLinksMcpInterface(
+                    get_devices_async=jetlinks_client.get_devices_async,
+                    set_property_async=jetlinks_client.set_property_async,
+                    get_property_async=jetlinks_client.get_property_async,
+                    get_scenes_async=jetlinks_client.get_scenes_async,
+                    trigger_scene_async=jetlinks_client.trigger_scene_async,
+                ))
+            await jetlinks_mcp.init_async()
+            await self._add_client(
+                transport_type=TransportType.LOCAL,
+                config=LocalMCPConfig(
+                    client_id=LocalMcpClientId.JETLINKS,
+                    server_name="JetLinks 物联网平台",
+                    mcp_server=jetlinks_mcp.mcp_instance))
+            logger.info("Successfully initialized JetLinks MCP client")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to initialize JetLinks MCP client: %s", e)
 
     async def _init_local_mcp_servers(self):
         """Initialize local MCP servers"""
